@@ -1,114 +1,146 @@
 # video_processing/event_analyzer.py
 import numpy as np
+import cv2
 
-# COCO Keypoint indices (for clarity)
-LEFT_SHOULDER, RIGHT_SHOULDER = 5, 6
+# --- 姿態關鍵點索引 ---
 LEFT_WRIST, RIGHT_WRIST = 9, 10
+LEFT_SHOULDER, RIGHT_SHOULDER = 5, 6
 
-def is_player_behind_baseline(player_center, court_polygon, frame_height):
+def is_player_behind_baseline(player_center, court_polygon):
+    if court_polygon is None or len(court_polygon) < 4: return True 
+    point = (float(player_center[0]), float(player_center[1]))
+    if cv2.pointPolygonTest(np.array(court_polygon, dtype=np.int32), point, False) >= 0: return False
+    return True
+
+def find_serve_by_pose_and_toss(all_frames_data, config, court_polygon):
     """
-    一個簡化的判斷，檢查球員是否大致在場地後方。
-    這裡假設攝影機視角相對固定，場地遠端Y座標較小，近端較大。
+    [最終交付版]
+    在「驗證拋球」階段加入了容錯機制，以應對因動態模糊導致的短暫目標丟失。
     """
-    if not player_center or not court_polygon:
-        return False
-        
-    px, py = player_center
+    # --- 參數設定 ---
+    wrist_dist_thresh = config.get("wrist_dist_thresh", 50)
+    min_pose_held_frames = config.get("min_pose_held_frames", 3)
+    toss_upward_vel_thresh = config.get("toss_upward_vel_thresh", 5) 
+    max_horizontal_ratio = config.get("max_horizontal_ratio", 1.5) 
+    min_toss_validation_frames = config.get("min_toss_validation_frames", 4)
+    min_toss_validation_height = config.get("min_toss_validation_height", 30)
+    hit_dist_thresh = config.get("hit_dist_thresh", 80)
+    max_lost_frames_tolerance = config.get("max_lost_frames", 15)
+    reacquisition_radius = config.get("reacquisition_radius", 150)
+    # ✨ 新增：驗證拋球階段的專用容錯參數 ✨
+    max_validation_lost_frames = config.get("max_validation_lost_frames", 5) 
+
+    # --- 狀態機 ---
+    state = "SEARCHING"
+    pose_confirmation_frame = -1
+    toss_data = {}
+
+    print("\n[智慧推理邏輯-最終交付版] 正在搜尋發球動作序列...")
     
-    # 找到場地多邊形y座標的最大值，作為近端底線的大致位置
-    # 這是一個粗略的估計，但對於初步篩選足夠
-    max_y = 0
-    for point in court_polygon:
-        if point[1] > max_y:
-            max_y = point[1]
-            
-    # 如果球員的y座標大於（更靠近攝影機）這個最大值，我們就認為他在近端底線後
-    # 遠端底線的判斷比較複雜，這裡先簡化，主要處理近端發球
-    return py > max_y
-
-def find_serve_events(all_frames_data, velocity_threshold=50, proximity_threshold=50):
-    """
-    基於姿態分析來尋找發球事件。
-    核心邏輯：偵測球員手腕的高速揮動，並檢查揮動時手與球是否接觸。
-
-    Args:
-        all_frames_data (list): 從 track_ball_and_player.py 產生的數據列表。
-        velocity_threshold (int): 手腕關鍵點在單幀內移動多少像素被視為高速揮動。
-        proximity_threshold (int): 揮動時，手腕與球中心的距離在多少像素內被視為接觸。
-
-    Returns:
-        list: 偵測到的發球事件列表。
-    """
-    serve_events = []
-    
-    # 需要至少兩幀數據來計算速度
-    if len(all_frames_data) < 2:
-        return []
-
-    print("\n開始基於姿態分析發球事件...")
     for i in range(1, len(all_frames_data)):
-        prev_frame = all_frames_data[i-1]
-        curr_frame = all_frames_data[i]
+        prev_frame_data = all_frames_data[i-1]
+        curr_frame_data = all_frames_data[i]
+        
+        players = curr_frame_data.get('player_detections', [])
+        balls = curr_frame_data.get('ball_detections', [])
+        
+        if state == "SEARCHING":
+            if not players or balls: continue
+            for player in players:
+                if not is_player_behind_baseline(player['center_point'], court_polygon): continue
+                kpts = player.get("pose_keypoints")
+                if not kpts or len(kpts) < 17: continue
+                l_wrist, r_wrist, l_shoulder_y = np.array(kpts[LEFT_WRIST][:2]), np.array(kpts[RIGHT_WRIST][:2]), kpts[LEFT_SHOULDER][1]
+                if kpts[LEFT_WRIST][2] > 0.4 and kpts[RIGHT_WRIST][2] > 0.4:
+                    wrist_dist = np.linalg.norm(l_wrist - r_wrist)
+                    if wrist_dist < wrist_dist_thresh and l_wrist[1] > (l_shoulder_y + 10):
+                        print(f"  > [第 {i} 幀][偵測到發球區姿勢] -> 進入 確認姿勢 狀態")
+                        state = "CONFIRMING_POSE"; pose_confirmation_frame = i
+                        toss_data = {'server_id': player['center_point'], 'server_info': player}
+                        break
+        
+        elif state == "CONFIRMING_POSE":
+            if (i - pose_confirmation_frame) >= min_pose_held_frames:
+                print(f"  > [第 {i} 幀][確認姿勢成功] -> 進入 耐心等待拋球 狀態")
+                state = "WAITING_FOR_TOSS"
+            elif not players: print(f"  > [第 {i} 幀][重設] 確認期間球員消失"); state = "SEARCHING"
+        
+        elif state == "WAITING_FOR_TOSS":
+            if balls:
+                curr_ball = max(balls, key=lambda b: b['confidence']); curr_ball_pos = np.array(curr_ball['center_point'])
+                server_pos = np.array(toss_data['server_id'])
+                if np.linalg.norm(curr_ball_pos - server_pos) < reacquisition_radius:
+                    ball_vy, ball_vx = 0, 0
+                    if prev_frame_data.get('ball_detections'):
+                        prev_ball_pos = min([b['center_point'] for b in prev_frame_data['ball_detections']], key=lambda p: np.linalg.norm(np.array(p) - curr_ball_pos), default=curr_ball_pos)
+                        ball_vy = prev_ball_pos[1] - curr_ball_pos[1]; ball_vx = curr_ball_pos[0] - prev_ball_pos[0]
+                    if ball_vy > toss_upward_vel_thresh:
+                        if abs(ball_vx) > ball_vy * max_horizontal_ratio:
+                            print(f"  > [第 {i} 幀][忽略] 偵測到水平移動 (vx: {ball_vx:.1f}, vy: {ball_vy:.1f})")
+                            continue
+                        print(f"  > [第 {i} 幀][偵測到垂直拋球] (vy: {ball_vy:.1f}) -> 進入 驗證軌跡 狀態")
+                        state = "VALIDATING_TOSS"; toss_data['validation_start_frame'] = i
+                        toss_data['validation_lost_frames'] = 0 # 初始化驗證容錯計數器
+            if (i - pose_confirmation_frame) > 150: print(f"  > [第 {i} 幀][重設] 等待拋球超時"); state = "SEARCHING"
 
-        # 該幀必須有球被偵測到
-        if not curr_frame.get('ball_detections'):
-            continue
-        # 簡單起見，我們只考慮信心度最高的那個球
-        best_ball = max(curr_frame['ball_detections'], key=lambda b: b['confidence'])
-        ball_center = np.array(best_ball['center_point'])
-
-        # 遍歷當前幀的每個球員
-        for player_idx, curr_player in enumerate(curr_frame.get('player_detections', [])):
-            
-            # 找到前一幀中同一個球員的數據 (這裡用索引近似，更複雜的需要ID追蹤)
-            if player_idx >= len(prev_frame.get('player_detections', [])):
+        elif state == "VALIDATING_TOSS":
+            # ✨ 核心修正：在驗證期間，對球的消失進行容錯 ✨
+            if not balls:
+                toss_data['validation_lost_frames'] += 1
+                print(f"  > [第 {i} 幀][驗證中] 暫時失去球... ({toss_data['validation_lost_frames']}/{max_validation_lost_frames})")
+                if toss_data['validation_lost_frames'] > max_validation_lost_frames:
+                    print(f"    ---> [重設] 驗證期間球失蹤太久，返回等待"); state = "WAITING_FOR_TOSS"
                 continue
-            prev_player = prev_frame['player_detections'][player_idx]
             
-            # --- 姿態分析條件 ---
-            curr_kpts = curr_player.get('pose_keypoints')
-            prev_kpts = prev_player.get('pose_keypoints')
+            toss_data['validation_lost_frames'] = 0 # 球出現了，重設計數器
+            curr_ball = max(balls, key=lambda b: b['confidence']); curr_ball_pos = np.array(curr_ball['center_point']); ball_vy = 0
+            if prev_frame_data.get('ball_detections'):
+                prev_ball_pos = min([b['center_point'] for b in prev_frame_data['ball_detections']], key=lambda p: np.linalg.norm(np.array(p) - curr_ball_pos), default=curr_ball_pos)
+                ball_vy = prev_ball_pos[1] - curr_ball_pos[1]
+            if ball_vy < -1: print(f"  > [第 {i} 幀][重設] 拋球軌跡不持續"); state = "WAITING_FOR_TOSS"; continue
+            frames_since_validation = i - toss_data['validation_start_frame']
+            if frames_since_validation >= min_toss_validation_frames:
+                print(f"  > [第 {i} 幀][確認拋球] 軌跡驗證成功！-> 進入 等待頂點 狀態")
+                state = "AWAITING_APEX"; toss_data['frames_lost_counter'] = 0
 
-            if not curr_kpts or not prev_kpts or len(curr_kpts) != 17 or len(prev_kpts) != 17:
+        elif state == "AWAITING_APEX":
+            # ... (此部分邏輯不變) ...
+            if not balls:
+                toss_data['frames_lost_counter'] = getattr(toss_data, 'frames_lost_counter', 0) + 1
+                if toss_data['frames_lost_counter'] > max_lost_frames_tolerance: print(f"    ---> [重設] 等待頂點期間球失蹤太久"); state = "SEARCHING"
                 continue
+            toss_data['frames_lost_counter'] = 0; ball_vy = 0
+            if prev_frame_data.get('ball_detections'):
+                curr_ball = max(balls, key=lambda b: b['confidence'])
+                prev_ball_pos = min([b['center_point'] for b in prev_frame_data['ball_detections']], key=lambda p: np.linalg.norm(np.array(p) - np.array(curr_ball['center_point'])), default=curr_ball['center_point'])
+                ball_vy = np.array(curr_ball['center_point'])[1] - np.array(prev_ball_pos)[1]
+            if ball_vy > 1:
+                print(f"  > [第 {i} 幀][到達頂點] 球已開始下落，進入 等待擊球 狀態。"); state = "AWAITING_HIT"
+            elif (i - toss_data.get('validation_start_frame', i)) > 60: print(f"  > [第 {i} 幀][重設] 等待頂點超時"); state = "SEARCHING"
+
+        elif state == "AWAITING_HIT":
+            # ... (此部分邏輯不變) ...
+            if not balls:
+                toss_data['frames_lost_counter'] = getattr(toss_data, 'frames_lost_counter', 0) + 1
+                if toss_data['frames_lost_counter'] > max_lost_frames_tolerance: print(f"    ---> [重設] 等待擊球期間球失蹤太久"); state = "SEARCHING"
+                continue
+            toss_data['frames_lost_counter'] = 0; current_server_data = None
+            original_server_id = toss_data.get('server_id')
+            if original_server_id and players:
+                candidates = [(p, np.linalg.norm(np.array(p['center_point']) - np.array(original_server_id))) for p in players]
+                valid_candidates = [cand for cand in candidates if cand[1] < reacquisition_radius]
+                if valid_candidates: current_server_data, _ = min(valid_candidates, key=lambda item: item[1])
+            if current_server_data:
+                toss_data['server_id'] = current_server_data['center_point']
+                curr_ball = max(balls, key=lambda b: b['confidence']); curr_ball_pos = np.array(curr_ball['center_point'])
+                dist_to_server = np.linalg.norm(np.array(current_server_data['center_point']) - curr_ball_pos)
+                print(f"  [第 {i} 幀][等待擊球] 追蹤中... [距離: {dist_to_server:.1f} (需 < {hit_dist_thresh})]")
+                if dist_to_server < hit_dist_thresh:
+                    print(f"  [成功!] 條件滿足，偵測到擊球！")
+                    return [{"frame_id": i, "event_type": "SERVE", "server_player_data": current_server_data, "ball_position": list(curr_ball_pos)}]
+            else:
+                toss_data['frames_lost_counter'] = getattr(toss_data, 'frames_lost_counter', 0) + 1
+                if toss_data['frames_lost_counter'] > max_lost_frames_tolerance: print(f"    ---> [重設] 目標(球員)失蹤太久"); state = "SEARCHING"
+            if (i - pose_confirmation_frame) > 240: print(f"  > [第 {i} 幀][重設] 整個序列等待超時"); state = "SEARCHING"
                 
-            # 檢查左右手腕
-            for wrist_idx, shoulder_idx in [(LEFT_WRIST, LEFT_SHOULDER), (RIGHT_WRIST, RIGHT_SHOULDER)]:
-                # 確保關鍵點可信
-                if curr_kpts[wrist_idx][2] > 0.5 and prev_kpts[wrist_idx][2] > 0.5 and curr_kpts[shoulder_idx][2] > 0.5:
-                    
-                    # 1. 計算手腕速度
-                    curr_wrist_pos = np.array(curr_kpts[wrist_idx][:2])
-                    prev_wrist_pos = np.array(prev_kpts[wrist_idx][:2])
-                    velocity = np.linalg.norm(curr_wrist_pos - prev_wrist_pos)
-                    
-                    # 2. 檢查速度是否超過閾值 (高速揮臂)
-                    if velocity > velocity_threshold:
-                        
-                        # 3. 檢查擊球點高度 (手腕高於肩膀)
-                        wrist_y = curr_kpts[wrist_idx][1]
-                        shoulder_y = curr_kpts[shoulder_idx][1]
-                        if wrist_y < shoulder_y: # 影像座標系中，y越小越高
-                            
-                            # 4. 檢查手球接觸 (距離夠近)
-                            distance_to_ball = np.linalg.norm(curr_wrist_pos - ball_center)
-                            if distance_to_ball < proximity_threshold:
-                                
-                                # 所有條件滿足，記錄為一個發球事件
-                                event = {
-                                    "frame_id": curr_frame['frame_id'],
-                                    "event_type": "SERVE_HIT",
-                                    "serving_player_idx": player_idx, # 暫用索引作為ID
-                                    "serving_hand": "LEFT" if wrist_idx == LEFT_WRIST else "RIGHT",
-                                    "ball_position": list(ball_center),
-                                    "wrist_position": list(curr_wrist_pos),
-                                    "wrist_velocity": float(velocity),
-                                    "hand_ball_distance": float(distance_to_ball)
-                                }
-                                serve_events.append(event)
-                                print(f"  > 偵測到發球事件! 幀: {event['frame_id']}, 球員索引: {event['serving_player_idx']}, 手: {event['serving_hand']}")
-                                # 為避免同一幀同一個人的兩隻手都被記錄，可以跳出手的迴圈
-                                break 
-    
-    print(f"分析完成，共偵測到 {len(serve_events)} 個潛在發球擊球點。")
-    return serve_events
+    return []
