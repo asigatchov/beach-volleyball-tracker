@@ -1,74 +1,154 @@
-# 沙灘排球視覺分析系統 (Beach Volleyball Vision-Analytics)
+# 沙灘排球進階戰術分析專案 (Beach Volleyball Advanced Tactical Analysis)
 
-本專案利用電腦視覺與深度學習技術，對沙灘排球比賽影片進行自動化分析，核心功能是從長時間錄影中分割出有效比賽片段，並基於球員姿態偵測發球等關鍵事件。
+## 專案總覽
 
-## 核心工作流程
+本專案提供一個自動化的解決方案，旨在從沙灘排球比賽影片中，深度挖掘與「發球」相關的戰術數據。系統透過先進的電腦視覺技術 (YOLOv8 物件追蹤與姿態估計)，不僅能準確識別發球事件，更能對發球的**方式**與**落點區域**進行量化分析。
 
-本系統的分析流程分為三個主要階段：
+此工具的核心價值在於其**穩定性**與**可調校性**。我們經歷了多次迭代，最終採用了一套基於物理直覺、並經過驗證的演算法，能有效應對真實比賽中複雜多變的情況，為教練、球員及數據分析師提供可靠的決策依據。
 
-**1. 場地幾何定義 (一次性設定)**
-   - **目的**: 為特定比賽場地或攝影機角度定義必要的幾何資訊。
-   - **腳本**: `python court_definition/court_config_generator.py <影片路徑>`
-   - **產出**: 一個 `court_config.json` 檔案，包含：
-     - `court_boundary_polygon`: 球場的四個邊界點。
-     - `exclusion_zones`: 需要忽略的區域（如裁判席、觀眾席）。
-     - `net_y`: 網子在畫面上的Y座標，用於簡單的位置判斷。
-     - `background_ball_zones`: 需要過濾掉的靜態背景球區域。
+---
 
-**2. 影片自動分割 (基於分數變化)**
-   - **目的**: 將原始長影片，根據分數板的變化，自動分割成多個獨立的比賽回合短影片。
-   - **腳本**: `python video_processing/video_slicer_by_score.py --input <長影片路徑> --output_dir <輸出目錄>`
-   - **方法**: 透過比較分數板ROI的影像差異 (SAD - Sum of Absolute Differences) 來偵測變化，而非OCR，這更穩健。
-   - **產出**: 在輸出目錄下生成 `normal_segments/` 和 `long_segments/`，存放分割好的影片。
+## 核心功能
 
-**3. 追蹤與事件分析 (核心)**
-   - **目的**: 對分割後的短影片進行逐幀分析，偵測球與球員，提取姿態，並最終識別出發球事件。
-   - **腳本**: `python video_processing/track_ball_and_player.py --input <單個短影片路徑>`
-   - **方法**:
-     1. **讀取設定**: 載入 `court_config.json`。
-     2. **物件偵測**: 使用YOLO模型偵測球 (`ball_best.pt`) 和球員 (`yolov8s-pose.pt`)。
-     3. **球員篩選**: 透過「排除區 -> 場內優先 -> 距離中心」的策略篩選出4名主要球員。
-     4. **姿態提取**: 儲存篩選後球員的17個身體關鍵點。
-     5. **數據儲存**: 將每一幀的所有資訊（球、球員、姿態）寫入一個詳細的 `..._all_frames_data_with_pose.json` 檔案。
-   - **後續 (自動調用)**:
-     - 在追蹤完成後，可以接著調用 `event_analyzer.py` 中的 `find_serve_events` 函數。
-     - 該函數會讀取剛剛生成的JSON檔案，**基於手腕速度、手腕與肩膀相對位置、手與球的接近程度** 來識別發球擊球點。
+* **高準確度的發球偵測**：採用一套經過驗證的、穩定的四段式狀態機 (`尋找拋球` -> `確認拋球` -> `等待頂點` -> `等待擊球`)，能有效過濾因重力下墜或球員移動造成的誤判。
 
-## 環境設定
+* **精準的發球員鎖定**：
+    * **回溯尋人法**：在初步偵測到擊球後，自動往前倒帶數幀 (`--search_offset`)，在球員與球最接近的「黃金時刻」進行判斷。
+    * **點對框最短距離演算法**：徹底解決因攝影機透視造成的判斷錯誤，使用更符合人類直覺的「點到矩形邊緣」最短距離來計算球與球員的遠近，大幅提升準確性。
 
-1.  **安裝依賴**:
+* **進階發球類型分析 (跳發/站發)**：
+    * **姿態軌跡分析**：透過 `yolov8n-pose.pt` 模型提取人體姿態關鍵點。
+    * **單一窗口位移法**：分析發球前一小段時間窗口內，發球員**臀部**的垂直位移軌跡，透過計算「下蹲最低點」到「跳躍最高點」的像素距離，穩健地判斷發球類型，有效抵抗單幀偵測失敗的干擾。
+
+* **發球落點區域分析 (A/B/C)**：
+    * 需要預先提供一個 `court_config.json` 檔案來定義球場四角。
+    * 程式會自動計算底線的三分區，並根據發球員的位置判斷其落點屬於 A, B, C 哪個戰術區域。
+
+* **強大的視覺化偵錯工具**：
+    * **跳發軌跡圖**：當啟用 `--debug_jump_serve` 模式時，程式會為每一次的跳發判斷，自動產生一張**臀部高度的軌跡圖**，清晰展示演算法的判斷依據。
+    * **關鍵幀儲存**：自動儲存每一次成功偵測到的發球事件前後各三幀的影像，方便快速進行人工複查與驗證。
+
+* **自動化數據匯出**：
+    * 在分析結束後，自動將所有影片的分析結果（片段名稱, 發球區域, 發球類型）匯總成一個 `analysis_summary.csv` 檔案，可直接用 Excel 或其他數據分析工具開啟。
+
+* **可控的平行處理**：
+    * 使用者可透過 `--workers` 參數，自由設定同時處理的影片數量，在**執行效率**與**硬體穩定性**之間找到最佳平衡點，有效避免記憶體不足的問題。
+
+---
+
+## 安裝與需求
+
+1.  **Python 環境**: 建議使用 Python 3.8 或更高版本。
+
+2.  **Conda (建議)**: 建議使用 `conda` 來管理環境。
     ```bash
-    pip install -r requirements.txt
-    ```
-    主要依賴包括 `ultralytics`, `opencv-python`, `numpy`。
-
-2.  **準備模型**:
-    - 將您的 `ball_best.pt` 模型放入 `models/` 資料夾。
-    - 下載或準備一個YOLOv8姿態模型，如 `yolov8s-pose.pt`，也放入 `models/` 資料夾。
-
-## 如何使用
-
-1.  **定義場地 (首次)**:
-    ```bash
-    python court_definition/court_config_generator.py "path/to/your/sample_video.mp4"
-    ```
-    按照螢幕提示，用滑鼠點擊定義場地、排除區和網子位置。這會生成 `court_config.json`。
-
-2.  **分割影片**:
-    ```bash
-    python video_processing/video_slicer_by_score.py --input "path/to/long_match.mp4" --output_dir "output_data/match1_segments"
+    conda create -n beach-volleyball-tracker python=3.8
+    conda activate beach-volleyball-tracker
     ```
 
-3.  **分析單個片段**:
-    對 `output_data/match1_segments/normal_segments` 中的某個影片執行分析。
+3.  **相依套件**:
     ```bash
-    python video_processing/track_ball_and_player.py --input "output_data/match1_segments/normal_segments/segment_001.mp4"
+    pip install opencv-python numpy tqdm ultralytics matplotlib
     ```
-    腳本執行完畢後，會在對應的輸出檔案夾內生成標註好的影片和包含所有姿態數據的JSON檔案。您可以進一步整合事件分析的邏輯，或手動檢查JSON結果。
+    *(`ultralytics` 會自動安裝 `torch` 等相關套件)*
 
-## 未來展望
+4.  **模型檔案**:
+    * 請確保您的 `video_processing/track_ball_and_player.py` 腳本可以存取到您指定的模型檔案，例如 `yolov8s-pose.pt` 和 `ball_best.pt`。
+    * 如果使用我們提供的最新版 `track` 腳本，請確保 `yolov8n.pt` 和 `yolov8n-pose.pt` 存在或可以被自動下載。
 
-* **自動化流程串接**: 將分割和分析腳本串聯起來，實現全自動處理。
-* **球員ID追蹤**: 引入追蹤演算法（如 DeepSORT, BoT-SORT）為每個球員分配一個穩定的ID，以應對遮擋。
-* **更複雜事件偵測**: 基於姿態數據，開發扣球、攔網等更複雜事件的識別模型。
-* **軌跡與戰術分析**: 擬合球的飛行軌跡，進行落點預測和戰術繪圖。
+---
+
+## 使用教學
+
+本專案的使用流程分為兩個主要步驟：
+
+### **第一步：定義球場邊界 (只需對同類視角做一次)**
+
+為了讓程式能夠進行發球區域分析，您必須先提供一個定義了球場四個角落座標的設定檔。
+
+1.  **執行設定檔產生器**:
+    ```bash
+    python court_definition/court_config_generator.py --video_path "path/to/your/sample_video.mp4"
+    ```
+2.  **標示球場角落**:
+    * 程式會顯示影片的第一幀畫面。
+    * 請**務必依照 `左上 -> 左下 -> 右下 -> 右上` 的順序**，用滑鼠左鍵點擊球場的四個角落。這個順序對後續的區域判斷至關重要。
+    * 完成後，腳本會在專案根目錄下產生一個 `court_config.json` 檔案。
+
+### **第二步：執行主分析程式**
+
+這是分析所有影片並產生結果的核心步驟。
+
+1.  **基本執行指令**:
+    ```bash
+    python run_analysis_all_in_one.py --input_folder "您的影片資料夾" --court_config "court_config.json"
+    ```
+
+2.  **完整偵錯模式 (推薦用於初次分析或參數微調)**:
+    這個指令會啟用跳發判斷的視覺化偵錯圖，並將同時執行的程序數設為1，確保穩定性。
+    ```bash
+    python run_analysis_all_in_one.py --input_folder "您的影片資料夾" --court_config "court_config.json" --workers 1 --debug_jump_serve --overwrite
+    ```
+
+---
+
+## 命令列參數詳解
+
+主程式 `run_analysis_all_in_one.py` 提供豐富的參數來自訂分析流程。
+
+### **主要參數**
+| 參數名稱 | 必要性 | 預設值 | 說明 |
+| :--- | :---: | :---: | :--- |
+| `--input_folder` | **必要** | - | 包含待分析影片的資料夾路徑。 |
+| `--court_config` | 可選 | `None` | `court_config.json` 的路徑。若提供，則啟用發球區域分析。 |
+| `--workers` | 可選 | `2` | 同時處理的影片數量。請根據您的硬體 RAM/VRAM 調整。 |
+| `--overwrite` | 可選 | `False` | 加上此旗標會強制重新分析所有影片，覆蓋舊結果。 |
+| `--debug_jump_serve` | 可選 | `False` | 啟用跳發判斷的視覺化偵錯模式，會產生臀部軌跡圖。 |
+
+### **核心演算法參數 (v11 穩定版)**
+| 參數名稱 | 預設值 | 說明 |
+| :--- | :---: | :--- |
+| `--hit_v` | `40.0` | 偵測擊球的最小瞬時總速度。 |
+| `--toss_vy` | `8.0` | 觸發「疑似拋球」的最小初始垂直向上速度。 |
+| `--vertical_ratio`| `1.5` | 拋球時，垂直速度必須是水平速度的最小倍數。 |
+| `--hit_h_ratio` | `2.5` | **(重要)** 擊球時，水平速度與垂直速度的最大比例，用來過濾純粹的垂直下墜。 |
+| *(... 其他如 `max_frames_to_apex` 等狀態機參數)* | ... | 用於微調狀態機時間窗口的參數。 |
+
+### **進階分析參數**
+| 參數名稱 | 預設值 | 說明 |
+| :--- | :---: | :--- |
+| `--search_offset`| `3` | 從初步偵測到的擊球點，往前「回溯」幾幀來尋找發球員。 |
+| `--ball_leave_threshold` | `30`| **(已棄用)** 用於舊版「精準校時」的參數。 |
+| `--jump_height_threshold` | `20`| 判斷為跳躍的最小臀部垂直位移像素值。 |
+
+---
+
+## 輸出結果說明
+
+分析完成後，所有的結果會儲存在您指定的 `--output_folder` 中。
+
+* **`final_summary_refined/`**: 此資料夾包含了最終的分析結果。
+    * **`analysis_summary.csv`**: **(最重要)** 可直接用 Excel 開啟的數據總表，包含了每個片段的發球區域和類型。
+    * **`summary_report.txt`**: 文字格式的總結報告，包含偵錯狀態。
+    * **`..._jump_debug_plot.png`**: (在偵錯模式下產生) 臀部高度軌跡圖，用於分析跳發判斷的準確性。
+
+* **`key_frames_for_review_refined/`**: 存放**所有影片**的關鍵幀 (`HIT` 前後各三幀)，方便您集中、快速地進行人工複查。
+
+* **`[影片名稱]/`**: 每個影片自己的資料夾。
+    * `tracking_output/`: 儲存了物件追蹤的原始數據 (`..._all_frames_data_with_pose.json`)。
+    * `key_frames/`: 存放**此影片**的關鍵幀。
+
+---
+
+## 疑難排解 (Troubleshooting)
+
+* **發球事件偵測不準確 (將下墜判斷成擊球)**:
+    * 這是 `v11` 邏輯的核心問題。請嘗試**降低** `--hit_h_ratio` 的值 (例如從 `2.5` 改為 `1.5` 或 `1.0`)，這會要求擊球動作有更強的水平分量，有助於過濾掉垂直下墜。
+
+* **跳發/站發判斷錯誤**:
+    1.  首先啟用 `--debug_jump_serve` 模式並重新執行。
+    2.  檢查產生的 `..._jump_debug_plot.png` 偵錯圖。
+    3.  查看圖表標題中的 `Displacement` (位移) 值。如果一個明顯的跳發，其位移值 (例如 `18.5`) 略低於門檻 (預設 `20`)，您就知道應該**降低** `--jump_height_threshold` 參數。反之亦然。
+
+* **程式崩潰並顯示記憶體錯誤 (`CUDA error` 或 `MemoryError`)**:
+    * 這是因為同時處理的影片太多，耗盡了 VRAM 或 RAM。請**降低** `--workers` 的值，從 `--workers 1` 開始嘗試。
