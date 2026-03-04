@@ -2,7 +2,7 @@
 import numpy as np
 import cv2
 
-# --- 姿態關鍵點索引 ---
+# --- Pose keypoint indices ---
 LEFT_WRIST, RIGHT_WRIST = 9, 10
 LEFT_SHOULDER, RIGHT_SHOULDER = 5, 6
 
@@ -14,10 +14,11 @@ def is_player_behind_baseline(player_center, court_polygon):
 
 def find_serve_by_pose_and_toss(all_frames_data, config, court_polygon):
     """
-    [最終交付版]
-    在「驗證拋球」階段加入了容錯機制，以應對因動態模糊導致的短暫目標丟失。
+    [Final release]
+    Added fault tolerance in the toss-validation stage to handle short target loss
+    caused by motion blur.
     """
-    # --- 參數設定 ---
+    # --- Parameters ---
     wrist_dist_thresh = config.get("wrist_dist_thresh", 50)
     min_pose_held_frames = config.get("min_pose_held_frames", 3)
     toss_upward_vel_thresh = config.get("toss_upward_vel_thresh", 5) 
@@ -27,15 +28,15 @@ def find_serve_by_pose_and_toss(all_frames_data, config, court_polygon):
     hit_dist_thresh = config.get("hit_dist_thresh", 80)
     max_lost_frames_tolerance = config.get("max_lost_frames", 15)
     reacquisition_radius = config.get("reacquisition_radius", 150)
-    # ✨ 新增：驗證拋球階段的專用容錯參數 ✨
+    # Added: dedicated fault-tolerance parameter for toss validation stage
     max_validation_lost_frames = config.get("max_validation_lost_frames", 5) 
 
-    # --- 狀態機 ---
+    # --- State machine ---
     state = "SEARCHING"
     pose_confirmation_frame = -1
     toss_data = {}
 
-    print("\n[智慧推理邏輯-最終交付版] 正在搜尋發球動作序列...")
+    print("\n[Smart inference logic - final release] Searching for serve action sequence...")
     
     for i in range(1, len(all_frames_data)):
         prev_frame_data = all_frames_data[i-1]
@@ -54,16 +55,16 @@ def find_serve_by_pose_and_toss(all_frames_data, config, court_polygon):
                 if kpts[LEFT_WRIST][2] > 0.4 and kpts[RIGHT_WRIST][2] > 0.4:
                     wrist_dist = np.linalg.norm(l_wrist - r_wrist)
                     if wrist_dist < wrist_dist_thresh and l_wrist[1] > (l_shoulder_y + 10):
-                        print(f"  > [第 {i} 幀][偵測到發球區姿勢] -> 進入 確認姿勢 狀態")
+                        print(f"  > [Frame {i}][Serve-zone pose detected] -> Entering CONFIRMING_POSE state")
                         state = "CONFIRMING_POSE"; pose_confirmation_frame = i
                         toss_data = {'server_id': player['center_point'], 'server_info': player}
                         break
         
         elif state == "CONFIRMING_POSE":
             if (i - pose_confirmation_frame) >= min_pose_held_frames:
-                print(f"  > [第 {i} 幀][確認姿勢成功] -> 進入 耐心等待拋球 狀態")
+                print(f"  > [Frame {i}][Pose confirmed] -> Entering WAITING_FOR_TOSS state")
                 state = "WAITING_FOR_TOSS"
-            elif not players: print(f"  > [第 {i} 幀][重設] 確認期間球員消失"); state = "SEARCHING"
+            elif not players: print(f"  > [Frame {i}][Reset] Player disappeared during confirmation"); state = "SEARCHING"
         
         elif state == "WAITING_FOR_TOSS":
             if balls:
@@ -76,38 +77,38 @@ def find_serve_by_pose_and_toss(all_frames_data, config, court_polygon):
                         ball_vy = prev_ball_pos[1] - curr_ball_pos[1]; ball_vx = curr_ball_pos[0] - prev_ball_pos[0]
                     if ball_vy > toss_upward_vel_thresh:
                         if abs(ball_vx) > ball_vy * max_horizontal_ratio:
-                            print(f"  > [第 {i} 幀][忽略] 偵測到水平移動 (vx: {ball_vx:.1f}, vy: {ball_vy:.1f})")
+                            print(f"  > [Frame {i}][Ignored] Horizontal motion detected (vx: {ball_vx:.1f}, vy: {ball_vy:.1f})")
                             continue
-                        print(f"  > [第 {i} 幀][偵測到垂直拋球] (vy: {ball_vy:.1f}) -> 進入 驗證軌跡 狀態")
+                        print(f"  > [Frame {i}][Vertical toss detected] (vy: {ball_vy:.1f}) -> Entering VALIDATING_TOSS state")
                         state = "VALIDATING_TOSS"; toss_data['validation_start_frame'] = i
-                        toss_data['validation_lost_frames'] = 0 # 初始化驗證容錯計數器
-            if (i - pose_confirmation_frame) > 150: print(f"  > [第 {i} 幀][重設] 等待拋球超時"); state = "SEARCHING"
+                        toss_data['validation_lost_frames'] = 0 # Initialize validation fault-tolerance counter
+            if (i - pose_confirmation_frame) > 150: print(f"  > [Frame {i}][Reset] Timeout while waiting for toss"); state = "SEARCHING"
 
         elif state == "VALIDATING_TOSS":
-            # ✨ 核心修正：在驗證期間，對球的消失進行容錯 ✨
+            # Core fix: tolerate temporary ball loss during validation
             if not balls:
                 toss_data['validation_lost_frames'] += 1
-                print(f"  > [第 {i} 幀][驗證中] 暫時失去球... ({toss_data['validation_lost_frames']}/{max_validation_lost_frames})")
+                print(f"  > [Frame {i}][Validating] Ball temporarily lost... ({toss_data['validation_lost_frames']}/{max_validation_lost_frames})")
                 if toss_data['validation_lost_frames'] > max_validation_lost_frames:
-                    print(f"    ---> [重設] 驗證期間球失蹤太久，返回等待"); state = "WAITING_FOR_TOSS"
+                    print(f"    ---> [Reset] Ball lost too long during validation, back to WAITING_FOR_TOSS"); state = "WAITING_FOR_TOSS"
                 continue
             
-            toss_data['validation_lost_frames'] = 0 # 球出現了，重設計數器
+            toss_data['validation_lost_frames'] = 0 # Ball is visible again, reset counter
             curr_ball = max(balls, key=lambda b: b['confidence']); curr_ball_pos = np.array(curr_ball['center_point']); ball_vy = 0
             if prev_frame_data.get('ball_detections'):
                 prev_ball_pos = min([b['center_point'] for b in prev_frame_data['ball_detections']], key=lambda p: np.linalg.norm(np.array(p) - curr_ball_pos), default=curr_ball_pos)
                 ball_vy = prev_ball_pos[1] - curr_ball_pos[1]
-            if ball_vy < -1: print(f"  > [第 {i} 幀][重設] 拋球軌跡不持續"); state = "WAITING_FOR_TOSS"; continue
+            if ball_vy < -1: print(f"  > [Frame {i}][Reset] Toss trajectory not sustained"); state = "WAITING_FOR_TOSS"; continue
             frames_since_validation = i - toss_data['validation_start_frame']
             if frames_since_validation >= min_toss_validation_frames:
-                print(f"  > [第 {i} 幀][確認拋球] 軌跡驗證成功！-> 進入 等待頂點 狀態")
+                print(f"  > [Frame {i}][Toss confirmed] Trajectory validation succeeded -> Entering AWAITING_APEX state")
                 state = "AWAITING_APEX"; toss_data['frames_lost_counter'] = 0
 
         elif state == "AWAITING_APEX":
-            # ... (此部分邏輯不變) ...
+            # ... (Logic in this section is unchanged) ...
             if not balls:
                 toss_data['frames_lost_counter'] = getattr(toss_data, 'frames_lost_counter', 0) + 1
-                if toss_data['frames_lost_counter'] > max_lost_frames_tolerance: print(f"    ---> [重設] 等待頂點期間球失蹤太久"); state = "SEARCHING"
+                if toss_data['frames_lost_counter'] > max_lost_frames_tolerance: print(f"    ---> [Reset] Ball lost too long while waiting for apex"); state = "SEARCHING"
                 continue
             toss_data['frames_lost_counter'] = 0; ball_vy = 0
             if prev_frame_data.get('ball_detections'):
@@ -115,14 +116,14 @@ def find_serve_by_pose_and_toss(all_frames_data, config, court_polygon):
                 prev_ball_pos = min([b['center_point'] for b in prev_frame_data['ball_detections']], key=lambda p: np.linalg.norm(np.array(p) - np.array(curr_ball['center_point'])), default=curr_ball['center_point'])
                 ball_vy = np.array(curr_ball['center_point'])[1] - np.array(prev_ball_pos)[1]
             if ball_vy > 1:
-                print(f"  > [第 {i} 幀][到達頂點] 球已開始下落，進入 等待擊球 狀態。"); state = "AWAITING_HIT"
-            elif (i - toss_data.get('validation_start_frame', i)) > 60: print(f"  > [第 {i} 幀][重設] 等待頂點超時"); state = "SEARCHING"
+                print(f"  > [Frame {i}][Apex reached] Ball started descending, entering AWAITING_HIT state."); state = "AWAITING_HIT"
+            elif (i - toss_data.get('validation_start_frame', i)) > 60: print(f"  > [Frame {i}][Reset] Timeout while waiting for apex"); state = "SEARCHING"
 
         elif state == "AWAITING_HIT":
-            # ... (此部分邏輯不變) ...
+            # ... (Logic in this section is unchanged) ...
             if not balls:
                 toss_data['frames_lost_counter'] = getattr(toss_data, 'frames_lost_counter', 0) + 1
-                if toss_data['frames_lost_counter'] > max_lost_frames_tolerance: print(f"    ---> [重設] 等待擊球期間球失蹤太久"); state = "SEARCHING"
+                if toss_data['frames_lost_counter'] > max_lost_frames_tolerance: print(f"    ---> [Reset] Ball lost too long while waiting for hit"); state = "SEARCHING"
                 continue
             toss_data['frames_lost_counter'] = 0; current_server_data = None
             original_server_id = toss_data.get('server_id')
@@ -134,13 +135,13 @@ def find_serve_by_pose_and_toss(all_frames_data, config, court_polygon):
                 toss_data['server_id'] = current_server_data['center_point']
                 curr_ball = max(balls, key=lambda b: b['confidence']); curr_ball_pos = np.array(curr_ball['center_point'])
                 dist_to_server = np.linalg.norm(np.array(current_server_data['center_point']) - curr_ball_pos)
-                print(f"  [第 {i} 幀][等待擊球] 追蹤中... [距離: {dist_to_server:.1f} (需 < {hit_dist_thresh})]")
+                print(f"  [Frame {i}][Awaiting hit] Tracking... [distance: {dist_to_server:.1f} (needs < {hit_dist_thresh})]")
                 if dist_to_server < hit_dist_thresh:
-                    print(f"  [成功!] 條件滿足，偵測到擊球！")
+                    print(f"  [Success] Conditions met, hit detected!")
                     return [{"frame_id": i, "event_type": "SERVE", "server_player_data": current_server_data, "ball_position": list(curr_ball_pos)}]
             else:
                 toss_data['frames_lost_counter'] = getattr(toss_data, 'frames_lost_counter', 0) + 1
-                if toss_data['frames_lost_counter'] > max_lost_frames_tolerance: print(f"    ---> [重設] 目標(球員)失蹤太久"); state = "SEARCHING"
-            if (i - pose_confirmation_frame) > 240: print(f"  > [第 {i} 幀][重設] 整個序列等待超時"); state = "SEARCHING"
+                if toss_data['frames_lost_counter'] > max_lost_frames_tolerance: print(f"    ---> [Reset] Target (player) lost for too long"); state = "SEARCHING"
+            if (i - pose_confirmation_frame) > 240: print(f"  > [Frame {i}][Reset] Whole sequence timeout"); state = "SEARCHING"
                 
     return []

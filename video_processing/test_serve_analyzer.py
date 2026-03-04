@@ -15,7 +15,7 @@ def parse_args():
     parser.add_argument("--hit_dist", type=float, default=80)
     parser.add_argument("--wrist_dist", type=float, default=50)
     parser.add_argument("--toss_vel", type=float, default=5.0)
-    # ✨ 新增日誌參數的定義
+    # Added logging arguments
     parser.add_argument("--log_file", type=str, default=None)
     parser.add_argument("--log_mode", type=str, default='w', choices=['w', 'a'])
     return parser.parse_args()
@@ -39,39 +39,39 @@ def main():
             sys.stdout = log_file_handler
         except Exception as e:
             sys.stdout = original_stdout
-            print(f"無法開啟日誌檔案: {e}")
+            print(f"Unable to open log file: {e}")
             pass
             
     try:
-        print(f"\n\n--- 階段 2: 發球分析 (test_serve_analyzer.py) ---\n開始時間: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n" + "="*50)
+        print(f"\n\n--- Stage 2: Serve Analysis (test_serve_analyzer.py) ---\nStart time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n" + "="*50)
         
         try:
             with open(args.json_input, 'r', encoding='utf-8') as f: all_frames_data = json.load(f)
-            print(f"[成功] 已從 {args.json_input} 載入 JSON 數據")
+            print(f"[Success] Loaded JSON data from {args.json_input}")
         except FileNotFoundError:
-            print(f"[致命錯誤] 找不到 JSON 檔案: {args.json_input}"); sys.exit(1)
+            print(f"[Fatal Error] JSON file not found: {args.json_input}"); sys.exit(1)
             
         try:
             with open(os.path.join(project_root, "court_config.json"), 'r') as f: court_config = json.load(f)
             court_polygon = court_config.get("court_boundary_polygon")
         except FileNotFoundError:
-            print("[警告] 找不到 court_config.json，發球區過濾器將被停用。")
+            print("[Warning] court_config.json not found. Serve-zone filtering will be disabled.")
             court_polygon = None
             
         config = { "hit_dist_thresh": args.hit_dist, "wrist_dist_thresh": args.wrist_dist, "toss_upward_vel_thresh": args.toss_vel }
-        print(f"[資訊] 使用以下參數進行分析: {config}")
+        print(f"[Info] Running analysis with parameters: {config}")
         
         serve_events = find_serve_by_pose_and_toss(all_frames_data, config, court_polygon)
         
-        if not serve_events: print("[警告] 未偵測到完整的發球序列。")
-        else: print(f"[成功] 偵測到發球事件，位於第 {serve_events[0]['frame_id']} 幀！")
+        if not serve_events: print("[Warning] No complete serve sequence detected.")
+        else: print(f"[Success] Serve event detected at frame {serve_events[0]['frame_id']}!")
             
         video_base_name = os.path.splitext(os.path.basename(args.video_input))[0]
         output_dir = os.path.join(project_root, args.output_dir)
         os.makedirs(output_dir, exist_ok=True)
         output_video_path = os.path.join(output_dir, f"{video_base_name}_analysis.mp4")
         
-        print(f"[資訊] 正在產生視覺化影片於: {output_video_path}")
+        print(f"[Info] Generating visualization video at: {output_video_path}")
         cap = cv2.VideoCapture(args.video_input)
         fps, w, h = cap.get(cv2.CAP_PROP_FPS), int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         writer = cv2.VideoWriter(output_video_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w, h))
@@ -90,7 +90,7 @@ def main():
             writer.write(frame); frame_idx += 1
             
         cap.release(); writer.release()
-        print("[成功] 視覺化影片已儲存。")
+        print("[Success] Visualization video saved.")
     finally:
         if log_file_handler:
             sys.stdout = original_stdout

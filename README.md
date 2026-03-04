@@ -1,154 +1,158 @@
-# 沙灘排球進階戰術分析專案 (Beach Volleyball Advanced Tactical Analysis)
+# Beach Volleyball Advanced Tactical Analysis Project
 
-## 專案總覽
+## Project Overview
 
-本專案提供一個自動化的解決方案，旨在從沙灘排球比賽影片中，深度挖掘與「發球」相關的戰術數據。系統透過先進的電腦視覺技術 (YOLOv8 物件追蹤與姿態估計)，不僅能準確識別發球事件，更能對發球的**方式**與**落點區域**進行量化分析。
+This project provides an automated solution for extracting serve-related tactical data from beach volleyball match videos. Using advanced computer vision techniques (YOLOv8 object tracking and pose estimation), the system not only detects serve events accurately, but also quantifies serve **type** and **landing zone**.
 
-此工具的核心價值在於其**穩定性**與**可調校性**。我們經歷了多次迭代，最終採用了一套基於物理直覺、並經過驗證的演算法，能有效應對真實比賽中複雜多變的情況，為教練、球員及數據分析師提供可靠的決策依據。
-
----
-
-## 核心功能
-
-* **高準確度的發球偵測**：採用一套經過驗證的、穩定的四段式狀態機 (`尋找拋球` -> `確認拋球` -> `等待頂點` -> `等待擊球`)，能有效過濾因重力下墜或球員移動造成的誤判。
-
-* **精準的發球員鎖定**：
-    * **回溯尋人法**：在初步偵測到擊球後，自動往前倒帶數幀 (`--search_offset`)，在球員與球最接近的「黃金時刻」進行判斷。
-    * **點對框最短距離演算法**：徹底解決因攝影機透視造成的判斷錯誤，使用更符合人類直覺的「點到矩形邊緣」最短距離來計算球與球員的遠近，大幅提升準確性。
-
-* **進階發球類型分析 (跳發/站發)**：
-    * **姿態軌跡分析**：透過 `yolov8n-pose.pt` 模型提取人體姿態關鍵點。
-    * **單一窗口位移法**：分析發球前一小段時間窗口內，發球員**臀部**的垂直位移軌跡，透過計算「下蹲最低點」到「跳躍最高點」的像素距離，穩健地判斷發球類型，有效抵抗單幀偵測失敗的干擾。
-
-* **發球落點區域分析 (A/B/C)**：
-    * 需要預先提供一個 `court_config.json` 檔案來定義球場四角。
-    * 程式會自動計算底線的三分區，並根據發球員的位置判斷其落點屬於 A, B, C 哪個戰術區域。
-
-* **強大的視覺化偵錯工具**：
-    * **跳發軌跡圖**：當啟用 `--debug_jump_serve` 模式時，程式會為每一次的跳發判斷，自動產生一張**臀部高度的軌跡圖**，清晰展示演算法的判斷依據。
-    * **關鍵幀儲存**：自動儲存每一次成功偵測到的發球事件前後各三幀的影像，方便快速進行人工複查與驗證。
-
-* **自動化數據匯出**：
-    * 在分析結束後，自動將所有影片的分析結果（片段名稱, 發球區域, 發球類型）匯總成一個 `analysis_summary.csv` 檔案，可直接用 Excel 或其他數據分析工具開啟。
-
-* **可控的平行處理**：
-    * 使用者可透過 `--workers` 參數，自由設定同時處理的影片數量，在**執行效率**與**硬體穩定性**之間找到最佳平衡點，有效避免記憶體不足的問題。
+The core value of this tool is its **stability** and **tuneability**. After multiple iterations, the current algorithm is based on physical intuition and validation against real-world scenarios, making it reliable for coaches, players, and data analysts.
 
 ---
 
-## 安裝與需求
+## Core Features
 
-1.  **Python 環境**: 建議使用 Python 3.8 或更高版本。
+- **High-accuracy serve detection**: Uses a validated and stable four-stage state machine (`search toss` -> `confirm toss` -> `wait apex` -> `wait hit`) to reduce false positives caused by gravity-driven drops or player movement.
 
-2.  **Conda (建議)**: 建議使用 `conda` 來管理環境。
-    ```bash
-    conda create -n beach-volleyball-tracker python=3.8
-    conda activate beach-volleyball-tracker
-    ```
+- **Precise server identification**:
+  - **Backtracking method**: After an initial hit detection, the system rewinds a few frames (`--search_offset`) and identifies the server at the best moment when player-ball distance is minimal.
+  - **Point-to-box shortest distance algorithm**: Reduces perspective-related errors by measuring the shortest distance from a point to a rectangle edge, improving player-ball association.
 
-3.  **相依套件**:
-    ```bash
-    pip install opencv-python numpy tqdm ultralytics matplotlib
-    ```
-    *(`ultralytics` 會自動安裝 `torch` 等相關套件)*
+- **Advanced serve type analysis (jump serve / standing serve)**:
+  - **Pose trajectory analysis**: Extracts body keypoints with `yolov8n-pose.pt`.
+  - **Single-window displacement method**: Uses hip vertical displacement before the serve and computes the distance from lowest crouch to highest jump point to classify serve type robustly, even with occasional per-frame detection failures.
 
-4.  **模型檔案**:
-    * 請確保您的 `video_processing/track_ball_and_player.py` 腳本可以存取到您指定的模型檔案，例如 `yolov8s-pose.pt` 和 `ball_best.pt`。
-    * 如果使用我們提供的最新版 `track` 腳本，請確保 `yolov8n.pt` 和 `yolov8n-pose.pt` 存在或可以被自動下載。
+- **Serve landing zone analysis (A/B/C)**:
+  - Requires a `court_config.json` file that defines the four court corners.
+  - The program automatically divides the baseline into three regions and classifies landing zone as A, B, or C based on server position.
 
----
+- **Strong visual debugging tools**:
+  - **Jump-serve trajectory plot**: With `--debug_jump_serve`, the program generates a hip-height trajectory chart for each jump-serve decision.
+  - **Key-frame saving**: Automatically saves three frames before and after each detected serve event for fast manual review.
 
-## 使用教學
+- **Automated data export**:
+  - After analysis, results from all videos (segment name, serve zone, serve type) are aggregated into `analysis_summary.csv`, ready for Excel or other analysis tools.
 
-本專案的使用流程分為兩個主要步驟：
-
-### **第一步：定義球場邊界 (只需對同類視角做一次)**
-
-為了讓程式能夠進行發球區域分析，您必須先提供一個定義了球場四個角落座標的設定檔。
-
-1.  **執行設定檔產生器**:
-    ```bash
-    python court_definition/court_config_generator.py --video_path "path/to/your/sample_video.mp4"
-    ```
-2.  **標示球場角落**:
-    * 程式會顯示影片的第一幀畫面。
-    * 請**務必依照 `左上 -> 左下 -> 右下 -> 右上` 的順序**，用滑鼠左鍵點擊球場的四個角落。這個順序對後續的區域判斷至關重要。
-    * 完成後，腳本會在專案根目錄下產生一個 `court_config.json` 檔案。
-
-### **第二步：執行主分析程式**
-
-這是分析所有影片並產生結果的核心步驟。
-
-1.  **基本執行指令**:
-    ```bash
-    python run_analysis_all_in_one.py --input_folder "您的影片資料夾" --court_config "court_config.json"
-    ```
-
-2.  **完整偵錯模式 (推薦用於初次分析或參數微調)**:
-    這個指令會啟用跳發判斷的視覺化偵錯圖，並將同時執行的程序數設為1，確保穩定性。
-    ```bash
-    python run_analysis_all_in_one.py --input_folder "您的影片資料夾" --court_config "court_config.json" --workers 1 --debug_jump_serve --overwrite
-    ```
+- **Controllable parallel processing**:
+  - Use `--workers` to set concurrent video processing count and balance execution speed vs hardware stability to avoid memory exhaustion.
 
 ---
 
-## 命令列參數詳解
+## Installation and Requirements
 
-主程式 `run_analysis_all_in_one.py` 提供豐富的參數來自訂分析流程。
+1. **Python environment**: Python 3.8+ is recommended.
 
-### **主要參數**
-| 參數名稱 | 必要性 | 預設值 | 說明 |
+2. **Conda (recommended)**:
+   ```bash
+   conda create -n beach-volleyball-tracker python=3.8
+   conda activate beach-volleyball-tracker
+   ```
+
+3. **Dependencies**:
+   ```bash
+   pip install opencv-python numpy tqdm ultralytics matplotlib
+   ```
+   *(The `ultralytics` package installs `torch` and related dependencies automatically.)*
+
+4. **Model files**:
+   - Ensure `video_processing/track_ball_and_player.py` can access your selected model files, e.g. `yolov8s-pose.pt` and `ball_best.pt`.
+   - If using the latest provided tracking script, ensure `yolov8n.pt` and `yolov8n-pose.pt` are available locally or can be auto-downloaded.
+
+---
+
+## Usage Guide
+
+The workflow has two main steps:
+
+### Step 1: Define Court Boundaries (once per camera/view type)
+
+To enable serve zone analysis, create a config file with the four court corner coordinates.
+
+1. **Run the config generator**:
+   ```bash
+   python court_definition/court_config_generator.py --video_path "path/to/your/sample_video.mp4"
+   ```
+
+2. **Mark court corners**:
+   - The program displays the first frame.
+   - Click the four corners strictly in this order: `top-left -> bottom-left -> bottom-right -> top-right`.
+   - After completion, `court_config.json` is saved in the project root.
+
+### Step 2: Run the main analysis script
+
+This is the core step for analyzing all videos and generating outputs.
+
+1. **Basic command**:
+   ```bash
+   python run_analysis_all_in_one.py --input_folder "your_video_folder" --court_config "court_config.json"
+   ```
+
+2. **Full debug mode (recommended for first runs or parameter tuning)**:
+   ```bash
+   python run_analysis_all_in_one.py --input_folder "your_video_folder" --court_config "court_config.json" --workers 1 --debug_jump_serve --overwrite
+   ```
+   This enables jump-serve debug plots and forces a single worker for stability.
+
+---
+
+## Command-line Parameters
+
+Main script `run_analysis_all_in_one.py` exposes rich parameters for customization.
+
+### Main Parameters
+
+| Parameter | Required | Default | Description |
 | :--- | :---: | :---: | :--- |
-| `--input_folder` | **必要** | - | 包含待分析影片的資料夾路徑。 |
-| `--court_config` | 可選 | `None` | `court_config.json` 的路徑。若提供，則啟用發球區域分析。 |
-| `--workers` | 可選 | `2` | 同時處理的影片數量。請根據您的硬體 RAM/VRAM 調整。 |
-| `--overwrite` | 可選 | `False` | 加上此旗標會強制重新分析所有影片，覆蓋舊結果。 |
-| `--debug_jump_serve` | 可選 | `False` | 啟用跳發判斷的視覺化偵錯模式，會產生臀部軌跡圖。 |
+| `--input_folder` | **Yes** | - | Path to folder containing videos to analyze. |
+| `--court_config` | No | `None` | Path to `court_config.json`. Enables serve zone analysis when provided. |
+| `--workers` | No | `2` | Number of videos processed in parallel. Tune based on RAM/VRAM. |
+| `--overwrite` | No | `False` | Re-analyze all videos and overwrite old results. |
+| `--debug_jump_serve` | No | `False` | Enable jump-serve visualization debug mode (hip trajectory plots). |
 
-### **核心演算法參數 (v11 穩定版)**
-| 參數名稱 | 預設值 | 說明 |
-| :--- | :---: | :--- |
-| `--hit_v` | `40.0` | 偵測擊球的最小瞬時總速度。 |
-| `--toss_vy` | `8.0` | 觸發「疑似拋球」的最小初始垂直向上速度。 |
-| `--vertical_ratio`| `1.5` | 拋球時，垂直速度必須是水平速度的最小倍數。 |
-| `--hit_h_ratio` | `2.5` | **(重要)** 擊球時，水平速度與垂直速度的最大比例，用來過濾純粹的垂直下墜。 |
-| *(... 其他如 `max_frames_to_apex` 等狀態機參數)* | ... | 用於微調狀態機時間窗口的參數。 |
+### Core Algorithm Parameters (v11 stable)
 
-### **進階分析參數**
-| 參數名稱 | 預設值 | 說明 |
+| Parameter | Default | Description |
 | :--- | :---: | :--- |
-| `--search_offset`| `3` | 從初步偵測到的擊球點，往前「回溯」幾幀來尋找發球員。 |
-| `--ball_leave_threshold` | `30`| **(已棄用)** 用於舊版「精準校時」的參數。 |
-| `--jump_height_threshold` | `20`| 判斷為跳躍的最小臀部垂直位移像素值。 |
+| `--hit_v` | `40.0` | Minimum instantaneous total speed to detect a hit. |
+| `--toss_vy` | `8.0` | Minimum initial upward vertical speed to trigger possible toss. |
+| `--vertical_ratio` | `1.5` | During toss, vertical speed must be at least this multiple of horizontal speed. |
+| `--hit_h_ratio` | `2.5` | **Important**: Maximum horizontal/vertical speed ratio at hit time, used to filter pure vertical drops. |
+| *(... other state-machine params such as `max_frames_to_apex` ...)* | ... | Parameters for tuning state-machine time windows. |
+
+### Advanced Analysis Parameters
+
+| Parameter | Default | Description |
+| :--- | :---: | :--- |
+| `--search_offset` | `3` | Number of frames to backtrack from initial hit point when searching for server. |
+| `--ball_leave_threshold` | `30` | **Deprecated**: Parameter used by old fine timing logic. |
+| `--jump_height_threshold` | `20` | Minimum hip vertical displacement (pixels) to classify as a jump. |
 
 ---
 
-## 輸出結果說明
+## Output Description
 
-分析完成後，所有的結果會儲存在您指定的 `--output_folder` 中。
+After analysis, all outputs are stored under your specified `--output_folder`.
 
-* **`final_summary_refined/`**: 此資料夾包含了最終的分析結果。
-    * **`analysis_summary.csv`**: **(最重要)** 可直接用 Excel 開啟的數據總表，包含了每個片段的發球區域和類型。
-    * **`summary_report.txt`**: 文字格式的總結報告，包含偵錯狀態。
-    * **`..._jump_debug_plot.png`**: (在偵錯模式下產生) 臀部高度軌跡圖，用於分析跳發判斷的準確性。
+- **`final_summary_refined/`**: Contains final analysis results.
+  - **`analysis_summary.csv`**: Most important output; table for Excel containing serve zone and serve type per segment.
+  - **`summary_report.txt`**: Text summary report including debug status.
+  - **`..._jump_debug_plot.png`**: (Debug mode only) Hip-height trajectory plot for jump-serve validation.
 
-* **`key_frames_for_review_refined/`**: 存放**所有影片**的關鍵幀 (`HIT` 前後各三幀)，方便您集中、快速地進行人工複查。
+- **`key_frames_for_review_refined/`**: Stores key frames for **all videos** (3 frames before and after `HIT`) for quick manual review.
 
-* **`[影片名稱]/`**: 每個影片自己的資料夾。
-    * `tracking_output/`: 儲存了物件追蹤的原始數據 (`..._all_frames_data_with_pose.json`)。
-    * `key_frames/`: 存放**此影片**的關鍵幀。
+- **`[video_name]/`**: Per-video folder.
+  - `tracking_output/`: Raw object-tracking data (`..._all_frames_data_with_pose.json`).
+  - `key_frames/`: Key frames for this specific video.
 
 ---
 
-## 疑難排解 (Troubleshooting)
+## Troubleshooting
 
-* **發球事件偵測不準確 (將下墜判斷成擊球)**:
-    * 這是 `v11` 邏輯的核心問題。請嘗試**降低** `--hit_h_ratio` 的值 (例如從 `2.5` 改為 `1.5` 或 `1.0`)，這會要求擊球動作有更強的水平分量，有助於過濾掉垂直下墜。
+- **Inaccurate serve detection (falling ball misclassified as hit)**:
+  - This is a key issue addressed by `v11`. Try lowering `--hit_h_ratio` (for example from `2.5` to `1.5` or `1.0`) so a hit must include stronger horizontal motion.
 
-* **跳發/站發判斷錯誤**:
-    1.  首先啟用 `--debug_jump_serve` 模式並重新執行。
-    2.  檢查產生的 `..._jump_debug_plot.png` 偵錯圖。
-    3.  查看圖表標題中的 `Displacement` (位移) 值。如果一個明顯的跳發，其位移值 (例如 `18.5`) 略低於門檻 (預設 `20`)，您就知道應該**降低** `--jump_height_threshold` 參數。反之亦然。
+- **Incorrect jump serve / standing serve classification**:
+  1. Re-run with `--debug_jump_serve`.
+  2. Inspect generated `..._jump_debug_plot.png`.
+  3. Check `Displacement` in the plot title. If an obvious jump serve has displacement slightly below threshold (default `20`, e.g. `18.5`), lower `--jump_height_threshold`.
 
-* **程式崩潰並顯示記憶體錯誤 (`CUDA error` 或 `MemoryError`)**:
-    * 這是因為同時處理的影片太多，耗盡了 VRAM 或 RAM。請**降低** `--workers` 的值，從 `--workers 1` 開始嘗試。
+- **Program crashes with memory errors (`CUDA error` or `MemoryError`)**:
+  - Too many videos are being processed in parallel. Reduce `--workers`, starting from `--workers 1`.
