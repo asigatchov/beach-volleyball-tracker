@@ -1,0 +1,13 @@
+[project]
+name = "beach-volleyball-tracker"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "matplotlib>=3.10.8",
+    "numpy>=2.4.2",
+    "opencv-python>=4.13.0.92",
+    "tqdm>=4.67.3",
+    "ultralytics>=8.4.19",
+]
