@@ -18,7 +18,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="[English] Track balls and players with pose estimation in beach volleyball videos.")
     parser.add_argument("--input", type=str, required=True, help="Path to input short video segment")
     parser.add_argument("--output_dir", type=str, default="output_data/tracking_output", help="Root output directory for tracking results")
-    parser.add_argument("--ball_model", type=str, default="models/ball_best.pt", help="Volleyball detection model path")
+    parser.add_argument("--ball_model", type=str, default="models/ball_yolo11m.pt", help="Volleyball detection model path")
     parser.add_argument("--player_model", type=str, default="models/yolov8s-pose.pt", help="Player detection + pose estimation model path")
     parser.add_argument("--conf", type=float, default=0.3, help="Object detection confidence threshold")
     parser.add_argument("--device", type=str, default="0", help="Inference device: 'cpu' or GPU id (e.g., '0')")
