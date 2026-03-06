@@ -8,6 +8,7 @@ import numpy as np
 g_window_name = "Court Config Generator"
 g_points = []
 g_display_frame = None
+g_is_fullscreen = False
 
 
 def mouse_callback(event, x, y, _flags, _param):
@@ -21,6 +22,23 @@ def draw_points_and_lines(frame, points, color, close_polygon=False):
         cv2.circle(frame, point, 4, color, -1)
     if len(points) > 1:
         cv2.polylines(frame, [np.array(points, dtype=np.int32)], close_polygon, color, 2)
+
+
+def set_fullscreen(enabled):
+    global g_is_fullscreen
+    g_is_fullscreen = enabled
+    cv2.setWindowProperty(
+        g_window_name,
+        cv2.WND_PROP_FULLSCREEN,
+        cv2.WINDOW_FULLSCREEN if enabled else cv2.WINDOW_NORMAL,
+    )
+
+
+def init_window(base_frame, start_fullscreen=False):
+    cv2.namedWindow(g_window_name, cv2.WINDOW_NORMAL)
+    cv2.resizeWindow(g_window_name, base_frame.shape[1], base_frame.shape[0])
+    if start_fullscreen:
+        set_fullscreen(True)
 
 
 def get_polygon_from_user(base_frame, zone_name, min_points, max_points):
@@ -44,7 +62,7 @@ def get_polygon_from_user(base_frame, zone_name, min_points, max_points):
         )
         cv2.putText(
             g_display_frame,
-            "n=confirm r=reset q=quit",
+            "n=confirm r=reset f=fullscreen q=quit",
             (20, 65),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.7,
@@ -56,6 +74,8 @@ def get_polygon_from_user(base_frame, zone_name, min_points, max_points):
 
         if key == ord("r"):
             g_points = []
+        elif key == ord("f"):
+            set_fullscreen(not g_is_fullscreen)
         elif key == ord("q"):
             return None
         elif key == ord("n"):
@@ -73,7 +93,7 @@ def get_point_from_user(base_frame, prompt):
     return point
 
 
-def main(video_path, config_save_path):
+def main(video_path, config_save_path, fullscreen=False):
     final_config = {
         "court_boundary_polygon": [],
         "exclusion_zones": [],
@@ -91,7 +111,7 @@ def main(video_path, config_save_path):
         print("Error: unable to read first frame.")
         return 1
 
-    cv2.namedWindow(g_window_name)
+    init_window(first_frame, start_fullscreen=fullscreen)
 
     boundary_points = get_polygon_from_user(first_frame, "boundary", 4, 4)
     if boundary_points is None:
@@ -105,7 +125,7 @@ def main(video_path, config_save_path):
 
     while True:
         view = current_frame.copy()
-        cv2.putText(view, "Step 2/4 exclusion zones: a=add n=next q=quit", (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
+        cv2.putText(view, "Step 2/4 exclusion zones: a=add n=next f=fullscreen q=quit", (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
         cv2.imshow(g_window_name, view)
         key = cv2.waitKey(0) & 0xFF
         if key == ord("a"):
@@ -116,6 +136,8 @@ def main(video_path, config_save_path):
                 return 1
             final_config["exclusion_zones"].append(exclusion_points)
             cv2.polylines(current_frame, [np.array(exclusion_points, dtype=np.int32)], True, (0, 0, 255), 2)
+        elif key == ord("f"):
+            set_fullscreen(not g_is_fullscreen)
         elif key == ord("n"):
             break
         elif key == ord("q"):
@@ -133,7 +155,7 @@ def main(video_path, config_save_path):
 
     while True:
         view = current_frame.copy()
-        cv2.putText(view, "Step 4/4 background ball zones: a=add n=finish q=quit", (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
+        cv2.putText(view, "Step 4/4 background ball zones: a=add n=finish f=fullscreen q=quit", (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
         cv2.imshow(g_window_name, view)
         key = cv2.waitKey(0) & 0xFF
         if key == ord("a"):
@@ -152,6 +174,8 @@ def main(video_path, config_save_path):
             }
             final_config["background_ball_zones"].append(zone)
             cv2.rectangle(current_frame, (zone["x1"], zone["y1"]), (zone["x2"], zone["y2"]), (255, 0, 255), 2)
+        elif key == ord("f"):
+            set_fullscreen(not g_is_fullscreen)
         elif key == ord("n"):
             break
         elif key == ord("q"):
@@ -185,9 +209,14 @@ def parse_args():
         default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "court_config.json"),
         help="Path to output JSON file.",
     )
+    parser.add_argument(
+        "--fullscreen",
+        action="store_true",
+        help="Start viewer in fullscreen mode (toggle anytime with 'f').",
+    )
     return parser.parse_args()
 
 
 if __name__ == "__main__":
     args = parse_args()
-    raise SystemExit(main(args.video_path, args.output))
+    raise SystemExit(main(args.video_path, args.output, fullscreen=args.fullscreen))
