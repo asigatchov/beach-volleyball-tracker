@@ -3,6 +3,7 @@ import os
 import subprocess
 import argparse
 import sys
+import shlex
 from datetime import datetime
 
 def find_video_files(directory):
@@ -13,6 +14,9 @@ def find_video_files(directory):
             if file.lower().endswith(supported_formats):
                 video_files.append(os.path.join(root, file))
     return video_files
+
+def print_external_command(command):
+    print(f"  [Cmd] {shlex.join(command)}")
 
 def main():
     parser = argparse.ArgumentParser(description="[Final Release] Automated batch volleyball video analysis pipeline.")
@@ -57,7 +61,8 @@ def main():
         ]
         if args.save_annotated_frames: track_command.append("--save_annotated_frames")
         if args.save_original_frames: track_command.append("--save_original_frames")
-        
+
+        print_external_command(track_command)
         result_track = subprocess.run(track_command)
 
         if result_track.returncode != 0:
@@ -81,6 +86,7 @@ def main():
             "--log_file", log_file_path,
             "--log_mode", "a"
         ]
+        print_external_command(analyze_command)
         result_analyze = subprocess.run(analyze_command)
 
         if result_analyze.returncode != 0:
